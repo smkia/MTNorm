@@ -5,6 +5,47 @@ Created on Thu Jul 27 09:25:02 2017
 @author: Mosi
 """
 import scipy as SP
+import numpy as np
+import pandas as pd
+import os
+from core.util import fileio
+
+
+def read_phenomics_data(main_dir, diagnosis = 'CONTROL', task_name = 'stopsignal', cope_num = 1, phenotypes = ['stopsignal'], mask = 'general', vol = True, scanner=None):
+    subjects_info = pd.read_csv(main_dir + 'participants.tsv', delimiter='\t')
+    if scanner==None:
+        subj_list =  subjects_info.loc[lambda subjects_info: subjects_info.diagnosis==diagnosis,'participant_id']
+    else:
+        a = np.asarray(subjects_info.diagnosis==diagnosis) * np.asarray(subjects_info.ScannerSerialNumber==scanner)
+        subj_list =  subjects_info.loc[lambda subjects_info: a,'participant_id']
+    phenotype_info = list()
+    for i in range(len(phenotypes)):
+        temp = pd.read_csv(main_dir + 'phenotype/' + phenotypes[i] + '.tsv', delimiter='\t')
+        if i == 0:      
+            temp = temp.iloc[:,1:]
+        else:
+            temp = temp.iloc[:,2:]
+        phenotype_info.append(temp)
+    phenotype_info = pd.concat(phenotype_info,axis=1)
+    fmri_data = list()
+    phenotype_data = list()
+    for i in range(len(subj_list)):
+        address = main_dir + 'derivatives/task/' +  subj_list.iloc[i] + '/' + task_name + '.feat/stats/' + 'cope' + str(cope_num) + '.nii.gz'
+        if os.path.isfile(address):
+            volume = fileio.load_nifti(address, vol = True)
+            if mask == 'general':
+                volmask = fileio.create_mask(volume, mask = main_dir + '/derivatives/task_group/' + task_name + '/mask.nii.gz')
+            elif mask == 'group':              
+                volmask = fileio.create_mask(volume, mask = main_dir + '/derivatives/task_group/' + task_name + '/cope' + str(cope_num) + '/flame1/mask.nii.gz')
+            if vol:
+                volume = volume * volmask
+                fmri_data.append(volume)   
+            else:
+                fmri_data.append(fileio.vol2vec(volume, volmask))
+            temp = phenotype_info.loc[lambda phenotype_info: phenotype_info.participant_id==subj_list.iloc[i],:]
+            temp = temp.apply(pd.to_numeric, errors='coerce')
+            phenotype_data.append(np.float32(np.asarray(temp.iloc[0,1:])))
+    return np.asarray(fmri_data), np.asarray(phenotype_data)
 
 def ravel(Y):
     """
