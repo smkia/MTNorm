@@ -75,7 +75,7 @@ def opt_hyper(gpr,hyperparams,Ifilter=None,bounds=None,opts={},*args,**kw_args):
             rv[idx] = 1E6
         return rv[Ifilter_x]
 
-    skeys = SP.sort(hyperparams.keys())
+    skeys = SP.sort(list(hyperparams.keys()))
     
     param_struct = {}    
     for name in skeys:

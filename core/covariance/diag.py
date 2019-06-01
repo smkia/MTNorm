@@ -1,6 +1,5 @@
 import scipy as SP
-import pdb
-from covar_base import CovarianceFunction
+from core.covariance.covar_base import CovarianceFunction
 
 class DiagIsoCF(CovarianceFunction):
     """

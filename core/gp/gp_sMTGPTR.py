@@ -3,14 +3,15 @@ import logging as LG
 import scipy as SP
 import scipy.linalg as LA
 import copy
-from gpbase import GPBASE
+from core.gp.gpbase import GPBASE
 from core.util.utilities import ravel,unravel,printProgressBar
 import tensorly as tl
 from tensorly.decomposition import partial_tucker
 from tensorly.base import unfold
+from functools import reduce
 
 class sMTGPTR(GPBASE):
-
+    
     __slots__ = ['covar_c','covar_r','covar_o','covar_s','bn', 'nbn','out_dims','in_dims']
     
     def __init__(self, basis_num = [1,1,1], noise_basis_num = [1,1,1], covar_r=None,covar_c=None,covar_o=None,covar_s=None,prior=None):
@@ -30,11 +31,8 @@ class sMTGPTR(GPBASE):
     def setPrior(self,prior):
         self.prior = None
 
-    def setData(self,Y=None,X=None,X_r=None,X_o=None,**kwargs):
-        """
-        set data
-        Y:    Outputs [n x t_1 x t_2 x ... x t_c]
-        """
+    def setData(self,Y=None,X=None,X_r=None,X_o=None,basis=None, nbasis=None, **kwargs):
+        
         self.Y = Y
         self.n = Y.shape[0]
         self.t = SP.zeros([Y.ndim-1,],dtype=int)
@@ -48,25 +46,67 @@ class sMTGPTR(GPBASE):
         if X_o!=None:
             self.covar_o.X = X_o
             
-        self.Y_hat, self.basis = partial_tucker(Y, modes = range(1,Y.ndim), ranks=self.bn, init='svd', tol=10e-5)
+        if (basis == None and nbasis == None):
+            self.Y_hat, self.basis = partial_tucker(Y, modes = range(1,Y.ndim), ranks=self.bn, init='svd', tol=10e-5)
+            reconstruction = SP.zeros(self.Y.shape)
+            for i in range(self.Y_hat.shape[0]):
+                reconstruction[i,:] = tl.tucker_to_tensor(self.Y_hat[i,:], self.basis) 
+            res = Y - reconstruction
+            temp, self.nbasis = partial_tucker(res, modes = range(1,Y.ndim), ranks=self.nbn, init='svd', tol=10e-5)
+        elif (basis != None and nbasis == None):
+            self.basis = basis
+            b = []
+            for i in range(len(basis)):
+                b.append(basis[i].T)
+            self.Y_hat = tl.tenalg.multi_mode_dot(Y, b, modes=range(1,Y.ndim))
+            reconstruction = SP.zeros(self.Y.shape)
+            for i in range(self.Y_hat.shape[0]):
+                reconstruction[i,:] = tl.tucker_to_tensor(self.Y_hat[i,:], self.basis) 
+            res = Y - reconstruction
+            temp, self.nbasis = partial_tucker(res, modes = range(1,Y.ndim), ranks=self.nbn, init='svd', tol=10e-5)
+        elif (basis == None and nbasis != None):
+            self.Y_hat, self.basis = partial_tucker(Y, modes = range(1,Y.ndim), ranks=self.bn, init='svd', tol=10e-5)
+            reconstruction = SP.zeros(self.Y.shape)
+            for i in range(self.Y_hat.shape[0]):
+                reconstruction[i,:] = tl.tucker_to_tensor(self.Y_hat[i,:], self.basis) 
+            res = Y - reconstruction
+            self.nbasis = nbasis
+            nb = []
+            for i in range(len(nbasis)):
+                nb.append(nbasis[i].T)
+            temp = tl.tenalg.multi_mode_dot(res,nb, modes=range(1,Y.ndim))
+        elif (basis != None and nbasis != None):
+            self.basis = basis
+            b = []
+            for i in range(len(basis)):
+                b.append(basis[i].T)
+            self.Y_hat = tl.tenalg.multi_mode_dot(Y, b, modes=range(1,Y.ndim))
+            reconstruction = SP.zeros(self.Y.shape)
+            for i in range(self.Y_hat.shape[0]):
+                reconstruction[i,:] = tl.tucker_to_tensor(self.Y_hat[i,:], self.basis) 
+            res = Y - reconstruction
+            self.nbasis = nbasis
+            nb = []
+            for i in range(len(nbasis)):
+                nb.append(nbasis[i].T)
+            temp = tl.tenalg.multi_mode_dot(res,nb, modes=range(1,Y.ndim))
+            
         for i in range(Y.ndim-1):
             self.covar_c[i].X = unfold(self.Y_hat, mode = i+1)
-        reconstruction = SP.zeros(self.Y.shape)
-        for i in range(self.Y_hat.shape[0]):
-            reconstruction[i,:] = tl.tucker_to_tensor(self.Y_hat[i,:], self.basis)        
-        res = Y - reconstruction
-        temp, self.nbasis = partial_tucker(res, modes = range(1,Y.ndim), ranks=self.nbn, init='svd', tol=10e-5)
+        
         for i in range(Y.ndim-1):
             self.covar_s[i].X = unfold(temp, mode = i+1)
         
         self._invalidate_cache()
 
+    
 
     def predict(self,hyperparams, Xstar_r, compute_cov = False):
         """
-        predict over new training points
+        predicting
         """
         KV = self.get_covariances(hyperparams)
+        
         self.covar_r[0].Xcross = Xstar_r
         Kstar_r = self.covar_r[0].Kcross(hyperparams['covar_r'][0])
         USUr = SP.dot(SP.sqrt(1./KV['S_o'][0]) * KV['U_o'][0],KV['Utilde_r'][0])
@@ -77,7 +117,7 @@ class sMTGPTR(GPBASE):
             usuc.append(SP.dot(self.basis[i], SP.dot(KV['K_c'][i], SP.dot(self.basis[i].T, 
                                SP.dot(self.nbasis[i], SP.dot(KV['USi_s'][i].T,KV['Utilde_c'][i]))))).T) 
         if SP.prod(self.t) <= 10000 :
-            USUC = reduce(SP.kron, usuc)
+            USUC = reduce(SP.kron, usuc[::-1])
             Ystar = SP.dot(RUSUrYhat,USUC)
         else:
             Ystar = SP.zeros([Xstar_r.shape[0],SP.prod(self.t)])
@@ -88,29 +128,29 @@ class sMTGPTR(GPBASE):
             elif self.out_dims == 2:
                 for j in range(self.t[0]):
                     for k in range(self.t[1]):
-                        USUC = reduce(SP.kron, [usuc[0][:,j],usuc[1][:,k]])
+                        USUC = reduce(SP.kron, [usuc[1][:,k],usuc[0][:,j]])
                         Ystar[:,k + j*self.t[1]] = SP.dot(RUSUrYhat,USUC)
             elif self.out_dims == 3: 
                for j in range(self.t[0]):
                     for k in range(self.t[1]):
                         for l in range(self.t[2]):
-                            USUC = reduce(SP.kron, [usuc[0][:,j],usuc[1][:,k],usuc[2][:,l]])
+                            USUC = reduce(SP.kron, [usuc[2][:,l],usuc[1][:,k],usuc[0][:,j]])
                             Ystar[:,l + k*self.t[2] + j*(self.t[1]*self.t[2])] = SP.dot(RUSUrYhat,USUC)
         Ystar_covar = []    
         if compute_cov:
             if self.nt < 10000:
-                B = reduce(SP.kron, self.basis)
-                C = SP.dot(B, SP.dot(reduce(SP.kron,KV['K_c']), B.T))
-                USUC = reduce(SP.kron, usuc)
+                B = reduce(SP.kron, self.basis[::-1])
+                C = SP.dot(B, SP.dot(reduce(SP.kron,KV['K_c'][::-1]), B.T))
+                USUC = reduce(SP.kron, usuc[::-1])
                 R_star_star = self.covar_r[0].K(hyperparams['covar_r'][0], Xstar_r)         
                 temp = SP.kron(USUC.T,SP.dot(Kstar_r.T,USUr)) 
                 Ystar_covar = SP.kron(SP.diag(C), SP.diag(R_star_star)) - SP.sum((1./S * temp).T * temp.T, axis = 0)
                 Ystar_covar = unravel(Ystar_covar, Xstar_r.shape[0], SP.prod(self.t))
             elif SP.prod(self.t) < 10000:
                 Ystar_covar = SP.zeros([Xstar_r.shape[0], SP.prod(self.t)])
-                B = reduce(SP.kron, self.basis)
-                C = SP.dot(B, SP.dot(reduce(SP.kron,KV['K_c']), B.T))
-                USUC = reduce(SP.kron, usuc)
+                B = reduce(SP.kron, self.basis[::-1])
+                C = SP.dot(B, SP.dot(reduce(SP.kron,KV['K_c'][::-1]), B.T))
+                USUC = reduce(SP.kron, usuc[::-1])
                 printProgressBar(0, Xstar_r.shape[0], prefix = 'Computing perdiction varaince:', suffix = 'Complete', length = 20)            
                 for i in range(Xstar_r.shape[0]):
                     R_star_star = self.covar_r[0].K(hyperparams['covar_r'][0], SP.expand_dims(Xstar_r[i,:],axis=0))
@@ -132,10 +172,11 @@ class sMTGPTR(GPBASE):
                 for j in range(self.out_dims):
                     temp = SP.dot(self.basis[j] ,SP.dot(KV['K_c'][j], self.basis[j].T))
                     c_diag.append(SP.diag(temp))
-                C = reduce(SP.kron, c_diag)                
+                C = reduce(SP.kron, c_diag[::-1])                
                 R_star_star = self.covar_r[0].K(hyperparams['covar_r'][0], Xstar_r)
                 R_tr_star = self.covar_r[0].Kcross(hyperparams['covar_r'][0])
                 r = SP.dot(R_tr_star.T, USUr)
+                #q = SP.reshape(SP.kron(SP.diag(R_star_star),C),[Ystar_covar.shape[0],Ystar_covar.shape[1]])
                 q = unravel(SP.kron(C,SP.diag(R_star_star)),Ystar_covar.shape[0],Ystar_covar.shape[1])
                 t = SP.zeros(Ystar_covar.shape)
                 printProgressBar(0, Xstar_r.shape[0], prefix = 'Computing perdiction varaince:', suffix = 'Complete', length = 20) 
@@ -148,7 +189,7 @@ class sMTGPTR(GPBASE):
                 elif self.out_dims == 2:
                     for j in range(self.t[0]):
                         for k in range(self.t[1]):
-                            USUC = reduce(SP.kron,[usuc[0][:,j],usuc[1][:,k]])
+                            USUC = reduce(SP.kron,[usuc[1][:,k],usuc[0][:,j]])
                             temp = SP.kron(USUC, r) 
                             t[k + (j*self.t[1]),] = SP.sum((1./S * temp).T * temp.T, axis = 0)
                         printProgressBar(j+1, self.t[0] , prefix = 'Computing perdiction varaince:', suffix = 'Complete', length = 20)
@@ -156,7 +197,7 @@ class sMTGPTR(GPBASE):
                    for j in range(self.t[0]):
                         for k in range(self.t[1]):
                             for l in range(self.t[2]):
-                                USUC = reduce(SP.kron,[usuc[0][:,j],usuc[1][:,k],usuc[2][:,l]])
+                                USUC = reduce(SP.kron,[usuc[2][:,l],usuc[1][:,k],usuc[0][:,j]])
                                 temp = SP.kron(USUC, r) 
                                 t[:,l + k*self.t[2] + j*self.t[1]*self.t[2],] = SP.sum((1./S * temp).T * temp.T, axis = 0)
                         if (j + 1) % 5 == 0:
@@ -168,7 +209,7 @@ class sMTGPTR(GPBASE):
                 for j in range(self.out_dims):
                     temp = SP.dot(self.basis[j] ,SP.dot(KV['K_c'][j], self.basis[j].T))
                     c_diag.append(SP.diag(temp))
-                C = reduce(SP.kron, c_diag)
+                C = reduce(SP.kron, c_diag[::-1])
                 printProgressBar(0, Xstar_r.shape[0], prefix = 'Computing perdiction varaince:', suffix = 'Complete', length = 20) 
                 for i in range(Xstar_r.shape[0]):
                     R_star_star = self.covar_r[0].K(hyperparams['covar_r'][0], SP.expand_dims(Xstar_r[i,:],axis=0))
@@ -185,14 +226,14 @@ class sMTGPTR(GPBASE):
                     elif self.out_dims == 2:
                         for j in range(self.t[0]):
                             for k in range(self.t[1]):
-                                USUC = reduce(SP.kron,[usuc[0][:,j],usuc[1][:,k]])
+                                USUC = reduce(SP.kron,[usuc[1][:,k],usuc[0][:,j]])
                                 temp = SP.kron(USUC, r) 
                                 t[k + (j*self.t[1]),] = SP.sum((1./S * temp).T * temp.T, axis = 0)
                     elif self.out_dims == 3: 
                        for j in range(self.t[0]):
                             for k in range(self.t[1]):
                                 for l in range(self.t[2]):
-                                    USUC = reduce(SP.kron,[usuc[0][:,j],usuc[1][:,k],usuc[2][:,l]])
+                                    USUC = reduce(SP.kron,[usuc[2][:,l],usuc[1][:,k],usuc[0][:,j]])
                                     temp = SP.kron(USUC, r) 
                                     t[l + k*self.t[2] + j*self.t[1]*self.t[2],] = SP.sum((1./S * temp).T * temp.T, axis = 0)
                     Ystar_covar[i,:] = q - t
@@ -234,10 +275,6 @@ class sMTGPTR(GPBASE):
         """
         INPUT:
         hyperparams:  dictionary
-        OUTPUT: dictionary with the fields
-        Kr:     kernel on rows
-        Kc:     kernel on columns
-        Knoise: noise kernel
         """
         
         if self._is_cached(hyperparams):
@@ -254,6 +291,7 @@ class sMTGPTR(GPBASE):
         # create short-cut
         KV = self._covar_cache
 
+        # do only recompute if hyperparameters of K_c,K_s change
         keys = list(set(hyperparams.keys()) & set(['covar_c','covar_s']))
         if not(self._is_cached(hyperparams,keys=keys)):
             Usi_c = list()
@@ -283,6 +321,7 @@ class sMTGPTR(GPBASE):
             KV['Ktilde_c'] = Ktilde_c; KV['Utilde_c'] = Utilde_c; KV['Stilde_c'] = Stilde_c
             KV['Ktilde_s'] = Ktilde_s; KV['Utilde_s'] = Utilde_s; KV['Stilde_s'] = Stilde_s
 
+        # do only recompute if hyperparameters of K_r,K_o change
         keys = list(set(hyperparams.keys()) & set(['covar_r','covar_o']))
         if not(self._is_cached(hyperparams,keys=keys)):
             Usi_r = list()
@@ -312,12 +351,12 @@ class sMTGPTR(GPBASE):
             KV['Ktilde_o'] = Ktilde_o; KV['Utilde_o'] = Utilde_o; KV['Stilde_o'] = Stilde_o
      
         KV['UYtildeU_rc'] = reduce(SP.dot,[reduce(SP.kron,KV['Utilde_r']).T,reduce(SP.kron,KV['USi_o']),SP.reshape(self.Y,[self.n,SP.prod(self.t)]),
-                            reduce(SP.kron,self.nbasis),reduce(SP.kron,KV['USi_s']).T,reduce(SP.kron,KV['Utilde_c'])])  
+                            reduce(SP.kron,self.nbasis[::-1]),reduce(SP.kron,KV['USi_s'][::-1]).T,reduce(SP.kron,KV['Utilde_c'][::-1])])  
         KV['UYtildeU_os'] = reduce(SP.dot,[reduce(SP.kron,KV['Utilde_o']).T,reduce(SP.kron,KV['USi_r']),SP.reshape(self.Y,[self.n,SP.prod(self.t)]),
-                            reduce(SP.kron,self.basis),reduce(SP.kron,KV['USi_c']).T,reduce(SP.kron,KV['Utilde_s'])])  
+                            reduce(SP.kron,self.basis[::-1]),reduce(SP.kron,KV['USi_c'][::-1]).T,reduce(SP.kron,KV['Utilde_s'][::-1])])  
         
-        KV['Stilde_rc'] = SP.kron(reduce(SP.kron,KV['Stilde_c']),reduce(SP.kron,KV['Stilde_r'])) + 1
-        KV['Stilde_os'] = SP.kron(reduce(SP.kron,KV['Stilde_s']),reduce(SP.kron,KV['Stilde_o'])) + 1
+        KV['Stilde_rc'] = SP.kron(reduce(SP.kron,KV['Stilde_c'][::-1]),reduce(SP.kron,KV['Stilde_r'])) + 1
+        KV['Stilde_os'] = SP.kron(reduce(SP.kron,KV['Stilde_s'][::-1]),reduce(SP.kron,KV['Stilde_o'])) + 1
         
         KV['hyperparams'] = copy.deepcopy(hyperparams)
         return KV
@@ -327,6 +366,7 @@ class sMTGPTR(GPBASE):
         """
         log marginal likelihood
         """
+        #self._update_inputs(hyperparams)
 
         try:
             KV = self.get_covariances(hyperparams)
@@ -337,7 +377,7 @@ class sMTGPTR(GPBASE):
         
         Si = 1./KV['Stilde_rc']
         lml_quad = 0.5 * (ravel(KV['UYtildeU_rc'])**2 * Si).sum()
-        lml_det = 0.5 * (SP.log(reduce(SP.kron,KV['S_s'])).sum() * self.n + SP.log(reduce(SP.kron,KV['S_o'])).sum() * SP.prod(self.t))
+        lml_det = 0.5 * (SP.log(reduce(SP.kron,KV['S_s'][::-1])).sum() * self.n + SP.log(reduce(SP.kron,KV['S_o'])).sum() * SP.prod(self.t))
         lml_det += 0.5 * SP.log(KV['Stilde_rc']).sum()
         lml_const = 0.5 * self.nt * (SP.log(2 * SP.pi))
         
@@ -352,6 +392,7 @@ class sMTGPTR(GPBASE):
         Input:
         hyperparams: dictionary
         """
+        #self._update_inputs(hyperparams)
         
         RV = {}
    
@@ -409,7 +450,7 @@ class sMTGPTR(GPBASE):
                     for z in range(len(temp)):
                         temp[z] = SP.diag(temp[z])
                     temp[k] = UdKU
-                    SUdKUS = reduce(SP.kron,temp)
+                    SUdKUS = reduce(SP.kron,temp[::-1])
                     LMLgrad_det = SP.sum(Si*SP.kron(SP.diag(SUdKUS),reduce(SP.kron,KV['Stilde_r'])))
                     SYUdKU = SP.dot(SUdKUS,reduce(SP.kron,KV['Stilde_r']) * Yhat.T)  # may be optimized
                     LMLgrad_quad = -(Yhat.T*SYUdKU).sum()
@@ -448,9 +489,9 @@ class sMTGPTR(GPBASE):
                     for z in range(len(temp)):
                         temp[z] = SP.diag(temp[z])
                     temp[k] = UdKU
-                    SUdKUS = reduce(SP.kron,temp)
-                    LMLgrad_det = SP.sum(Si*SP.kron(reduce(SP.kron,KV['Stilde_c']),SP.diag(SUdKUS)))
-                    SYUdKU = SP.dot(SUdKUS,Yhat*reduce(SP.kron,KV['Stilde_c']))
+                    SUdKUS = reduce(SP.kron,temp[::-1])
+                    LMLgrad_det = SP.sum(Si*SP.kron(reduce(SP.kron,KV['Stilde_c'][::-1]),SP.diag(SUdKUS)))
+                    SYUdKU = SP.dot(SUdKUS,Yhat*reduce(SP.kron,KV['Stilde_c'][::-1]))
                     LMLgrad_quad = -(Yhat*SYUdKU).sum()
                     LMLgrad = 0.5*(LMLgrad_det + LMLgrad_quad)
                     theta[i] = LMLgrad
@@ -478,7 +519,9 @@ class sMTGPTR(GPBASE):
             k=0
             RV['covar_s'] = []
             for covar in self.covar_s:
-                theta = SP.zeros(len(hyperparams['covar_s'][k]))                
+                theta = SP.zeros(len(hyperparams['covar_s'][k]))
+                #USU = SP.dot(KV['USi_c'][k].T,KV['Utilde_s'][k])
+                
                 USU = SP.dot(self.nbasis[k].T, SP.dot(self.basis[k], SP.dot(KV['USi_c'][k].T,KV['Utilde_s'][k])))
 
                 for i in range(len(theta)):
@@ -488,7 +531,7 @@ class sMTGPTR(GPBASE):
                     for z in range(len(temp)):
                         temp[z] = SP.diag(temp[z])
                     temp[k] = UdKU
-                    SUdKUS = reduce(SP.kron,temp)
+                    SUdKUS = reduce(SP.kron,temp[::-1])
                     LMLgrad_det = SP.sum(Si*SP.kron(SP.diag(SUdKUS),reduce(SP.kron,KV['Stilde_o'])))
                     SYUdKU = SP.dot(SUdKUS,reduce(SP.kron,KV['Stilde_o']) * Yhat.T)                    
                     LMLgrad_quad = -(Yhat.T*SYUdKU).sum()
@@ -527,9 +570,9 @@ class sMTGPTR(GPBASE):
                     for z in range(len(temp)):
                         temp[z] = SP.diag(temp[z])
                     temp[k] = UdKU
-                    SUdKUS = reduce(SP.kron,temp)
-                    LMLgrad_det = SP.sum(Si*SP.kron(reduce(SP.kron,KV['Stilde_s']),SP.diag(SUdKUS)))
-                    SYUdKU = SP.dot(SUdKUS,Yhat*reduce(SP.kron,KV['Stilde_s']))
+                    SUdKUS = reduce(SP.kron,temp[::-1])
+                    LMLgrad_det = SP.sum(Si*SP.kron(reduce(SP.kron,KV['Stilde_s'][::-1]),SP.diag(SUdKUS)))
+                    SYUdKU = SP.dot(SUdKUS,Yhat*reduce(SP.kron,KV['Stilde_s'][::-1]))
                     LMLgrad_quad = -(Yhat*SYUdKU).sum()
                     LMLgrad = 0.5*(LMLgrad_det + LMLgrad_quad)
                     theta[i] = LMLgrad

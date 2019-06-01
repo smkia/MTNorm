@@ -1,7 +1,5 @@
 import scipy as SP
-import pdb
-from covar_base import CovarianceFunction
-import copy
+from core.covariance.covar_base import CovarianceFunction
 
 class LinearCF(CovarianceFunction):
     """

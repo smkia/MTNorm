@@ -1,8 +1,5 @@
 import scipy as SP
-import pdb
-from covar_base import CovarianceFunction
-from linear import LinearCF
-from diag import DiagIsoCF,DiagArdCF
+from core.covariance.covar_base import CovarianceFunction
 
 class SumCF(CovarianceFunction):
     """

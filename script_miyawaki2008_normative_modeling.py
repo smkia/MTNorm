@@ -151,7 +151,7 @@ if method == 'sMT_GPR':
             abnormal_probs_MT = extreme_value_prob(EVD_params, NPMs_MT, 0.05)
             auc_MT[r,b] = roc_auc_score(labels, abnormal_probs_MT)    
             
-            print 'sMT-GPR_' + str(basis_num[b]) + ': R2 = %f, AUC = %f' %(r2_MT[r,b], auc_MT[r,b])
+            print ('sMT-GPR_' + str(basis_num[b]) + ': R2 = %f, AUC = %f' %(r2_MT[r,b], auc_MT[r,b]))
             
             savemat(save_path + 'results_miyawaki_normative_sMTGPR.mat',{'r2_MT': r2_MT,
                                 'elapsed_time_opt': elapsed_time_opt, 'elapsed_time_est': elapsed_time_est, 
@@ -218,7 +218,7 @@ elif method == 'STGPR':
         abnormal_probs_ST = extreme_value_prob(EVD_params,NPMs_ST, 0.05)
         auc_ST[r,] = roc_auc_score(labels, abnormal_probs_ST)
         
-        print 'STGPR_' + str(r) + ': R2 = %f, AUC = %f' %(np.mean(r2_ST[r,:]), auc_ST[r,])
+        print ('STGPR_' + str(r) + ': R2 = %f, AUC = %f' %(np.mean(r2_ST[r,:]), auc_ST[r,]))
                                                       
         savemat(save_path + 'results_miyawaki_normative_STGPR.mat',{'r2_ST': r2_ST, 
                             'elapsed_time_opt': elapsed_time_opt, 'elapsed_time_est': elapsed_time_est,
@@ -288,7 +288,7 @@ elif method == 'MT_Kronprod':
         abnormal_probs_MT = extreme_value_prob(EVD_params, NPMs_MT, 0.05)
         auc_MT[r,] = roc_auc_score(labels, abnormal_probs_MT)    
         
-        print 'MT-Kronprod' + ': R2 = %f, AUC = %f' %(r2_MT[r,], auc_MT[r,])
+        print ('MT-Kronprod' + ': R2 = %f, AUC = %f' %(r2_MT[r,], auc_MT[r,]))
         
         savemat(save_path + 'results_miyawaki_normative_Kronprod.mat',{'r2_MT': r2_MT, 
                 'elapsed_time_opt': elapsed_time_opt, 'elapsed_time_est': elapsed_time_est, 

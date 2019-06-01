@@ -1,8 +1,5 @@
 import scipy as SP
-import pdb
-import sys
-from covar_base import CovarianceFunction
-import scipy.spatial.distance as DIST
+from core.covariance.covar_base import CovarianceFunction
 import core.linalg.dist as dist
 
 class SqExpCF(CovarianceFunction):

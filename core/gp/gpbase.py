@@ -1,4 +1,4 @@
-from gp_base import GP
+from core.gp.gp_base import GP
 
 
 class GPBASE(GP):

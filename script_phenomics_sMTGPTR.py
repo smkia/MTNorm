@@ -14,6 +14,7 @@ from core.covariance.diag import DiagIsoCF
 import core.gp.gp_sMTGPTR as gp_sMTGPTR
 import core.optimize.optimize_tensor as optimize_tensor
 from sklearn.preprocessing import StandardScaler, Imputer
+import tensorly as tl
 from tensorly.base import partial_unfold, partial_fold, fold
 from core.util.normod import extreme_value_prob, normative_prob_map, extreme_value_prob_fit
 from sklearn.linear_model import LinearRegression
@@ -23,6 +24,8 @@ import core.optimize.optimize_base as optimize_base
 from sklearn.metrics import roc_auc_score
 import nibabel as nib
 from scipy.io import savemat
+from functools import reduce
+tl.set_backend('numpy') 
 
 ############################# PRARAMTERs and PATHs ############################
 runs = 20
@@ -42,15 +45,24 @@ x_from = 8; x_to = 57; y_from = 8; y_to = 69; z_from = 1; z_to = 41;
 
 control_fmri_data, control_phenotype_data = read_phenomics_data(main_dir, 
                 diagnosis='CONTROL', task_name = 'taskswitch' , cope_num = 1, phenotypes = phenotypes)
-patient_fmri_data, patient_phenotype_data = read_phenomics_data(main_dir, 
+SCHZ_fmri_data, SCHZ_phenotype_data = read_phenomics_data(main_dir, 
                 diagnosis='SCHZ', task_name = 'taskswitch' , cope_num = 1, phenotypes = phenotypes)
+ADHD_fmri_data, ADHD_phenotype_data = read_phenomics_data(main_dir, 
+                diagnosis='ADHD', task_name = 'taskswitch' , cope_num = 1, phenotypes = phenotypes)
+BIPL_fmri_data, BIPL_phenotype_data = read_phenomics_data(main_dir, 
+                diagnosis='BIPOLAR', task_name = 'taskswitch' , cope_num = 1, phenotypes = phenotypes)
+
 original_image_size = list(control_fmri_data.shape)
 
 control_phenotype_data[control_phenotype_data<-100] = np.nan
-patient_phenotype_data[patient_phenotype_data<-100] = np.nan
+SCHZ_phenotype_data[SCHZ_phenotype_data<-100] = np.nan
+ADHD_phenotype_data[ADHD_phenotype_data<-100] = np.nan
+BIPL_phenotype_data[BIPL_phenotype_data<-100] = np.nan
 
 control_fmri_data = control_fmri_data[:,x_from:x_to,y_from:y_to,z_from:z_to]
-patient_fmri_data = patient_fmri_data[:,x_from:x_to,y_from:y_to,z_from:z_to]
+SCHZ_fmri_data = SCHZ_fmri_data[:,x_from:x_to,y_from:y_to,z_from:z_to]
+ADHD_fmri_data = ADHD_fmri_data[:,x_from:x_to,y_from:y_to,z_from:z_to]
+BIPL_fmri_data = BIPL_fmri_data[:,x_from:x_to,y_from:y_to,z_from:z_to]
 
 Y_shape = control_fmri_data.shape[1:]
 
@@ -58,22 +70,35 @@ voxel_num = np.prod(control_fmri_data.shape[1:])
 
 if (method == 'ST'):
     control_fmri_data = np.reshape(control_fmri_data, [control_fmri_data.shape[0],voxel_num])
-    patient_fmri_data = np.reshape(patient_fmri_data, [patient_fmri_data.shape[0],voxel_num])
+    SCHZ_fmri_data = np.reshape(SCHZ_fmri_data, [SCHZ_fmri_data.shape[0],voxel_num])
+    ADHD_fmri_data = np.reshape(ADHD_fmri_data, [ADHD_fmri_data.shape[0],voxel_num])
+    BIPL_fmri_data = np.reshape(BIPL_fmri_data, [BIPL_fmri_data.shape[0],voxel_num])
     
-patient_sample_num = patient_fmri_data.shape[0]
+SCHZ_sample_num = SCHZ_fmri_data.shape[0]
+ADHD_sample_num = ADHD_fmri_data.shape[0]
+BIPL_sample_num = BIPL_fmri_data.shape[0]
+patient_sample_num = SCHZ_sample_num + ADHD_sample_num + BIPL_sample_num
 control_sample_num = control_fmri_data.shape[0]
 
 ################################ Training Tensor-GP ###########################
 
-train_num = control_sample_num / 3 
+train_num = int(np.floor(control_sample_num / 3 ))
 labels = np.zeros([patient_sample_num + control_sample_num - 2*train_num,])
 labels[control_sample_num - 2*train_num:,] = 1 
+diagnosis_labels = np.zeros_like(labels)
+diagnosis_labels[control_sample_num - train_num:control_sample_num - train_num+SCHZ_sample_num] = 1
+diagnosis_labels[control_sample_num - train_num + SCHZ_sample_num-5:control_sample_num - 
+                 train_num + SCHZ_sample_num + ADHD_sample_num] = 2
+diagnosis_labels[control_sample_num - train_num + SCHZ_sample_num + ADHD_sample_num:] = 3 
 
 elapsed_time_opt = np.zeros([runs,])
 elapsed_time_est = np.zeros([runs,])
 r2 = np.zeros([runs,])
 r2_2 = np.zeros([3,runs])
-auc = np.zeros([runs,])
+auc_all = np.zeros([runs,])
+auc_SCHZ = np.zeros([runs,])
+auc_ADHD = np.zeros([runs,])
+auc_BIPL = np.zeros([runs,])
 evd_shape = np.zeros([runs,])
 
 for r in range(runs):
@@ -82,10 +107,12 @@ for r in range(runs):
     test_idx = np.setdiff1d(np.array(range(control_sample_num)),train_idx)
     
     X_train = control_phenotype_data[train_idx,]
-    X_test = np.concatenate((control_phenotype_data[test_idx,:], patient_phenotype_data))
+    X_test = np.concatenate((control_phenotype_data[test_idx,:], SCHZ_phenotype_data, 
+                             ADHD_phenotype_data, BIPL_phenotype_data))
         
     Y_train = control_fmri_data[train_idx,:]
-    Y_test = np.concatenate((control_fmri_data[test_idx,:], patient_fmri_data))
+    Y_test = np.concatenate((control_fmri_data[test_idx,:], SCHZ_fmri_data,
+                             ADHD_fmri_data, BIPL_fmri_data))
     
     X_imputer = Imputer()
     X_imputer.fit(X_train)
@@ -223,9 +250,12 @@ for r in range(runs):
     NPMs_MT[~np.isfinite(NPMs_MT)] = 0
     EVD_params = extreme_value_prob_fit(NPMs_MT[:train_num,:], 0.01)
     abnormal_probs_MT = extreme_value_prob(EVD_params, NPMs_MT[train_num:,:], 0.01)
-    auc_MT = roc_auc_score(labels, abnormal_probs_MT)        
-    print 'Results'  + 'AUC = %f' %(auc_MT)
-    auc[r,] = auc_MT
+    auc_all[r,] = roc_auc_score(labels, abnormal_probs_MT)   
+    auc_SCHZ[r] = roc_auc_score(labels[(diagnosis_labels==0) | (diagnosis_labels==1),], abnormal_probs_MT[(diagnosis_labels==0) | (diagnosis_labels==1),])
+    auc_ADHD[r] = roc_auc_score(labels[(diagnosis_labels==0) | (diagnosis_labels==2),], abnormal_probs_MT[(diagnosis_labels==0) | (diagnosis_labels==2),])
+    auc_BIPL[r] = roc_auc_score(labels[(diagnosis_labels==0) | (diagnosis_labels==3),], abnormal_probs_MT[(diagnosis_labels==0) | (diagnosis_labels==3),])    
+         
+    print ('Results'  + 'AUC = %f' %(auc_all[r,]))
     
     ################################## Saving Results ######################### 
     
@@ -239,4 +269,5 @@ for r in range(runs):
     
     savemat(save_path + method + '_' + str(b) + '_' + str(nb) + '_results.mat',
             {'elapsed_time_opt': elapsed_time_opt, 'elapsed_time_est': elapsed_time_est, 
-             'auc':auc, 'hyperparams':hyperparams_opt})
+             'auc_all':auc_all, 'auc_SCHZ':auc_SCHZ, 'auc_ADHD':auc_ADHD, 'auc_BIPL':auc_BIPL,
+             'hyperparams':hyperparams_opt})
